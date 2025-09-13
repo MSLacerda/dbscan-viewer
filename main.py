@@ -1,7 +1,7 @@
 # app.py
 import numpy as np
 import pandas as pd
-from sklearn.datasets import make_blobs, make_moons
+from sklearn.datasets import make_blobs, make_moons, make_circles
 from sklearn.neighbors import NearestNeighbors
 from sklearn.cluster import DBSCAN
 import plotly.express as px
@@ -17,12 +17,13 @@ EXPOSE_FLAGS_IN_UI = True           # exibir flags na UI
 
 st.set_page_config(page_title="Explorador DBSCAN – ε", layout="wide")
 
+# ───────────────── Aparência global ─────────────────
 def style_plot(fig, height=600, width=None):
     fig.update_layout(
         font=dict(size=18, color="black"),
         legend=dict(
-            font=dict(size=20, color="black"),
-            title=dict(font=dict(size=22, color="black"))
+            font=dict(size=20, color="black"),                 # itens
+            title=dict(font=dict(size=22, color="black"))      # título
         ),
         xaxis=dict(
             title_font=dict(size=20, color="black"),
@@ -42,14 +43,16 @@ def style_plot(fig, height=600, width=None):
         fig.update_layout(width=width)
     return fig
 
-# ───────────────── Helpers ─────────────────
+# ───────────────── Helpers de DBSCAN/joelho ─────────────────
 def kth_neighbor_distances(X, k: int):
+    """Distâncias até o k-ésimo vizinho para cada ponto (ordenadas e originais)."""
     nbrs = NearestNeighbors(n_neighbors=k + 1).fit(X)  # +1 inclui o próprio ponto
     dists, _ = nbrs.kneighbors(X)
     kth = dists[:, -1]
     return np.sort(kth), kth
 
 def run_dbscan(X, eps, min_samples):
+    """Executa DBSCAN e retorna rótulos e contagens úteis."""
     db = DBSCAN(eps=eps, min_samples=min_samples).fit(X)
     labels = db.labels_                 # -1 = ruído
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
@@ -58,6 +61,7 @@ def run_dbscan(X, eps, min_samples):
     return labels, n_clusters, clustered, outliers
 
 def suggest_eps_from_knee(sorted_kdist):
+    """Heurística simples: pico de curvatura discreta (pode superestimar em dados bem separados)."""
     y = sorted_kdist
     if len(y) < 5:
         return float(np.median(y))
@@ -68,6 +72,7 @@ def suggest_eps_from_knee(sorted_kdist):
     return float(y[knee_idx])
 
 def compute_eps_range(X, min_samples):
+    """Define um intervalo razoável para o slider de ε a partir de percentis da k-distância."""
     sorted_kdist, _ = kth_neighbor_distances(X, min_samples)
     p10, p95 = np.percentile(sorted_kdist, [10, 95])
     if p95 <= 0:
@@ -76,7 +81,7 @@ def compute_eps_range(X, min_samples):
     hi = max(lo * 2, p95 * 1.25)
     return float(lo), float(hi), sorted_kdist
 
-# ——— utilitários de cor ———
+# ───────────────── Utilitários de cor ─────────────────
 def _to_rgb_tuple(color_str):
     if not isinstance(color_str, str):
         return None
@@ -138,7 +143,7 @@ def fixed_color_map(unique_labels):
         cmap[lab] = safe_palette[i % len(safe_palette)]
     return cmap
 
-# ——— círculos de raio ε em coordenadas do dado (com amostragem p/ performance) ———
+# ───────────────── Desenho de círculos de raio ε ─────────────────
 def epsilon_circles(df_xy, eps, max_circles=800, seed=42):
     """
     Gera shapes de círculos (em unidades do dado) com raio = ε ao redor de pontos (x1, x2).
@@ -172,8 +177,16 @@ if EXPOSE_FLAGS_IN_UI:
 
 dataset = st.sidebar.selectbox(
     "Conjunto de dados",
-    ["Blobs (separáveis)", "Duas Luas (não linear)"], index=0
+    [
+        "Blobs (separáveis)",
+        "Duas Luas (não linear)",
+        "Círculos Concêntricos",
+        "Espiral",
+        "Uniforme Aleatório",
+    ],
+    index=0
 )
+
 n_samples = st.sidebar.slider("Tamanho da amostra", 200, 5000, 800, step=100)
 random_state = st.sidebar.number_input("Semente (aleatória)", 0, 10000, 42, step=1)
 
@@ -182,9 +195,29 @@ if dataset.startswith("Blobs"):
     cluster_std = st.sidebar.slider("Blobs: dispersão dos grupos", 0.2, 3.0, 0.80, step=0.05)
     X, y_true = make_blobs(n_samples=n_samples, centers=centers,
                            cluster_std=cluster_std, random_state=random_state)
-else:
+
+elif dataset.startswith("Duas"):
     noise = st.sidebar.slider("Duas Luas: ruído", 0.0, 0.5, 0.08, step=0.01)
     X, y_true = make_moons(n_samples=n_samples, noise=noise, random_state=random_state)
+
+elif dataset.startswith("Círculos"):
+    noise = st.sidebar.slider("Círculos: ruído", 0.0, 0.5, 0.05, step=0.01)
+    factor = st.sidebar.slider("Círculos: espaçamento", 0.1, 0.9, 0.5, step=0.05)
+    X, y_true = make_circles(n_samples=n_samples, noise=noise, factor=factor, random_state=random_state)
+
+elif dataset.startswith("Espiral"):
+    turns = st.sidebar.slider("Espiral: nº de voltas", 1, 6, 3, step=1)
+    noise = st.sidebar.slider("Espiral: ruído", 0.0, 0.5, 0.05, step=0.01)
+    t = np.linspace(0, turns * 2 * np.pi, n_samples)
+    x = t * np.cos(t) + np.random.normal(scale=noise, size=n_samples)
+    y = t * np.sin(t) + np.random.normal(scale=noise, size=n_samples)
+    X = np.c_[x, y]
+    y_true = None
+
+elif dataset.startswith("Uniforme"):
+    rng = np.random.RandomState(random_state)
+    X = rng.rand(n_samples, 2) * 10 - 5
+    y_true = None
 
 min_samples = st.sidebar.slider("min_samples (k)", 2, 50, 10, step=1)
 
@@ -201,7 +234,7 @@ try:
         "ε (epsilon)",
         float(eps_lo), float(eps_hi),
         float(eps_default),
-        step=(eps_hi - eps_lo) / 500
+        step=(eps_hi - eps_lo) / 500  # passo fino
     )
 except Exception:
     eps = st.sidebar.select_slider(
@@ -210,11 +243,12 @@ except Exception:
         value=eps_default
     )
 
-# ✅ Checkbox para mostrar o raio ε em cada ponto
+# Círculos de raio ε
 st.sidebar.markdown("---")
 show_eps_radius = st.sidebar.checkbox("Mostrar raio ε em cada ponto", value=False)
 max_circles = st.sidebar.slider("Limite de círculos (perf.)", 100, 3000, 800, step=100)
 
+# Sweep
 st.sidebar.markdown("---")
 do_sweep = st.sidebar.checkbox("Mostrar variação com ε", value=False)
 sweep_points = st.sidebar.slider("Resolução da variação (# de ε)", 10, 200, 50, step=5)
@@ -232,10 +266,22 @@ with colA:
     cols = ["x1", "x2"] + ([f"x{i}" for i in range(3, X.shape[1] + 1)] if X.shape[1] > 2 else [])
     df = pd.DataFrame(X, columns=cols)
     df["label"] = labels.astype(int)
+
+    # nomes (clusters como números; ruído nomeado)
     df["label_name"] = df["label"].astype(str)
     df.loc[df["label"] == -1, "label_name"] = "Ruído"
 
-    cmap = fixed_color_map(df["label_name"].unique())
+    # Ordena legenda: clusters numéricos, depois Ruído
+    labels_presentes = list(df["label_name"].unique())
+    def _ord_key(lab):
+        return (lab == "Ruído", int(lab) if lab != "Ruído" and lab.lstrip("-").isdigit() else 10**9)
+    ordered_labels = sorted(labels_presentes, key=_ord_key)
+    df["label_name"] = pd.Categorical(df["label_name"], categories=ordered_labels, ordered=True)
+
+    # mapa de cores/símbolos só para categorias presentes
+    cmap = fixed_color_map(ordered_labels)
+    symbol_map = {**{lab: "circle" for lab in ordered_labels if lab != "Ruído"},
+                  "Ruído": "x"}
 
     st.subheader("Agrupamento atual")
     m1, m2, m3, m4 = st.columns(4)
@@ -244,29 +290,24 @@ with colA:
     m3.metric("Grupos", f"{n_clusters}")
     m4.metric("Ruído", f"{outliers}  ({outliers/len(df):.1%})")
 
-    # legenda única: cor e símbolo por label_name (clusters=circle, ruído=x)
-    symbol_map = {**{str(l): "circle" for l in df["label_name"].unique() if l != "Ruído"},
-                  "Ruído": "x"}
-
     fig_scatter = px.scatter(
         df, x="x1", y="x2",
         color="label_name",
-        symbol="label_name",
+        symbol="label_name",                 # clusters=circle, Ruído=x
         symbol_map=symbol_map,
         opacity=0.95,
         title="DBSCAN – pontos agrupados e ruído",
-        color_discrete_map=cmap
+        color_discrete_map=cmap,
+        category_orders={"label_name": ordered_labels}
     )
     fig_scatter.update_traces(marker=dict(size=10, line=dict(width=0)))
 
-    # 🔵 Opcional: desenhar círculos de raio ε em coordenadas do dado
+    # Círculos de raio ε (coordenadas reais)
     if show_eps_radius:
         shapes, used = epsilon_circles(df[["x1", "x2"]], eps, max_circles=max_circles)
-        # manter proporção 1:1 para os círculos não virarem elipses
-        fig_scatter.update_yaxes(scaleanchor="x", scaleratio=1.0)
-        # adicionar shapes (abaixo dos pontos)
+        fig_scatter.update_yaxes(scaleanchor="x", scaleratio=1.0)  # círculos de verdade
         fig_scatter.update_layout(shapes=shapes)
-        st.caption(f"Raio ε desenhado em {used} ponto(s) (limite configurado: {max_circles}).")
+        st.caption(f"Raio ε desenhado em {used} ponto(s) (limite: {max_circles}).")
 
     fig_scatter = style_plot(fig_scatter, height=650)
     st.plotly_chart(fig_scatter, use_container_width=True)
@@ -285,8 +326,8 @@ with colB:
     fig_k.add_hline(y=eps, line_dash="dash",
                     annotation_text=f"ε = {eps:.4f}", annotation_position="top left")
 
+    # Flag visual do ε sugerido
     if SHOW_SUGGESTED_EPS_VISUAL:
-        eps_suggested = suggest_eps_from_knee(sorted_kdist)
         fig_k.add_hline(y=eps_suggested, line_dash="dot",
                         annotation_text=f"ε sugerido ≈ {eps_suggested:.4f}")
 
@@ -332,7 +373,8 @@ with st.expander("Notas"):
         """
 - **Cores fixas**: apenas *Ruído* é vermelho; grupos usam paleta estável sem vermelho.
 - **Símbolos**: grupos → círculo; *Ruído* → “x”.
-- **Raio ε**: círculos são desenhados em coordenadas reais (não em pixels) e com limite de quantidade para manter a performance; a proporção dos eixos é fixada (1:1) para os círculos não virarem elipses.
+- **Raio ε**: círculos são desenhados em coordenadas reais e com limite para manter a performance; ao ativar, a proporção dos eixos é 1:1.
 - **Joelho**: o cálculo de **ε sugerido** permanece ativo; a exibição pode ser ligada/desligada pela *feature flag*.
+- **Datasets**: Blobs, Duas Luas, Círculos Concêntricos, Espiral e Uniforme Aleatório.
         """
     )
