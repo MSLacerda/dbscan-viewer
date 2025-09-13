@@ -11,22 +11,18 @@ import streamlit as st
 import re, colorsys
 
 # ============================ Feature Flags ============================
-# Mostra a linha/label de "ε sugerido" no gráfico do joelho? (apenas visual)
-SHOW_SUGGESTED_EPS_VISUAL = False
-
-# (opcional) expor um toggle na sidebar para mudar a flag em tempo real
-EXPOSE_FLAGS_IN_UI = True
+SHOW_SUGGESTED_EPS_VISUAL = False   # mostra/oculta a linha de ε sugerido (só visual)
+EXPOSE_FLAGS_IN_UI = True           # exibir flags na UI
 # ======================================================================
 
-# ───────────────── Configuração Streamlit ─────────────────
 st.set_page_config(page_title="Explorador DBSCAN – ε", layout="wide")
 
 def style_plot(fig, height=600, width=None):
     fig.update_layout(
         font=dict(size=18, color="black"),
         legend=dict(
-            font=dict(size=20, color="black"),          # texto dos itens
-            title=dict(font=dict(size=22, color="black"))  # título da legenda
+            font=dict(size=20, color="black"),
+            title=dict(font=dict(size=22, color="black"))
         ),
         xaxis=dict(
             title_font=dict(size=20, color="black"),
@@ -62,7 +58,6 @@ def run_dbscan(X, eps, min_samples):
     return labels, n_clusters, clustered, outliers
 
 def suggest_eps_from_knee(sorted_kdist):
-    # Heurística simples por curvatura discreta (pode superestimar em dados bem separados)
     y = sorted_kdist
     if len(y) < 5:
         return float(np.median(y))
@@ -81,7 +76,7 @@ def compute_eps_range(X, min_samples):
     hi = max(lo * 2, p95 * 1.25)
     return float(lo), float(hi), sorted_kdist
 
-# ——— utilidades de cor: aceitar #hex e rgb/rgba, remover vermelhos do palette ———
+# ——— utilitários de cor ———
 def _to_rgb_tuple(color_str):
     if not isinstance(color_str, str):
         return None
@@ -143,7 +138,29 @@ def fixed_color_map(unique_labels):
         cmap[lab] = safe_palette[i % len(safe_palette)]
     return cmap
 
-# ───────────────── Sidebar (PT-BR) ─────────────────
+# ——— círculos de raio ε em coordenadas do dado (com amostragem p/ performance) ———
+def epsilon_circles(df_xy, eps, max_circles=800, seed=42):
+    """
+    Gera shapes de círculos (em unidades do dado) com raio = ε ao redor de pontos (x1, x2).
+    Limita a quantidade para manter performance.
+    """
+    idx = np.arange(len(df_xy))
+    if len(idx) > max_circles:
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(idx, size=max_circles, replace=False)
+
+    shapes = []
+    for i in idx:
+        xi = float(df_xy.iloc[i]["x1"]); yi = float(df_xy.iloc[i]["x2"])
+        shapes.append(dict(
+            type="circle", xref="x", yref="y", layer="below",
+            x0=xi - eps, x1=xi + eps, y0=yi - eps, y1=yi + eps,
+            line=dict(color="rgba(0,0,0,0.25)", width=1),
+            fillcolor="rgba(0,0,0,0.0)"
+        ))
+    return shapes, len(idx)
+
+# ───────────────── Sidebar ─────────────────
 st.sidebar.title("Dados e Parâmetros")
 
 if EXPOSE_FLAGS_IN_UI:
@@ -176,8 +193,27 @@ eps_lo, eps_hi, sorted_kdist = compute_eps_range(X, min_samples)
 eps_suggested = suggest_eps_from_knee(sorted_kdist)   # calculado, mas pode não ser mostrado
 
 st.sidebar.markdown("---")
+
+# Slider híbrido para ε
 eps_default = (eps_lo + eps_hi) / 2
-eps = st.sidebar.slider("ε (epsilon)", float(eps_lo), float(eps_hi), float(eps_default))
+try:
+    eps = st.sidebar.slider(
+        "ε (epsilon)",
+        float(eps_lo), float(eps_hi),
+        float(eps_default),
+        step=(eps_hi - eps_lo) / 500
+    )
+except Exception:
+    eps = st.sidebar.select_slider(
+        "ε (epsilon)",
+        options=np.linspace(eps_lo, eps_hi, 500),
+        value=eps_default
+    )
+
+# ✅ Checkbox para mostrar o raio ε em cada ponto
+st.sidebar.markdown("---")
+show_eps_radius = st.sidebar.checkbox("Mostrar raio ε em cada ponto", value=False)
+max_circles = st.sidebar.slider("Limite de círculos (perf.)", 100, 3000, 800, step=100)
 
 st.sidebar.markdown("---")
 do_sweep = st.sidebar.checkbox("Mostrar variação com ε", value=False)
@@ -196,13 +232,8 @@ with colA:
     cols = ["x1", "x2"] + ([f"x{i}" for i in range(3, X.shape[1] + 1)] if X.shape[1] > 2 else [])
     df = pd.DataFrame(X, columns=cols)
     df["label"] = labels.astype(int)
-
-    # nomes da legenda (clusters como números; ruído nomeado)
     df["label_name"] = df["label"].astype(str)
     df.loc[df["label"] == -1, "label_name"] = "Ruído"
-
-    # símbolo: clusters=circle, ruído=x
-    df["is_outlier"] = (df["label_name"] == "Ruído")
 
     cmap = fixed_color_map(df["label_name"].unique())
 
@@ -213,18 +244,30 @@ with colA:
     m3.metric("Grupos", f"{n_clusters}")
     m4.metric("Ruído", f"{outliers}  ({outliers/len(df):.1%})")
 
+    # legenda única: cor e símbolo por label_name (clusters=circle, ruído=x)
+    symbol_map = {**{str(l): "circle" for l in df["label_name"].unique() if l != "Ruído"},
+                  "Ruído": "x"}
+
     fig_scatter = px.scatter(
         df, x="x1", y="x2",
         color="label_name",
-        symbol="label_name",  # usa o mesmo campo da cor
-        symbol_map={**{str(l): "circle" for l in df["label_name"].unique() if l != "Ruído"},
-                    "Ruído": "x"},
+        symbol="label_name",
+        symbol_map=symbol_map,
         opacity=0.95,
         title="DBSCAN – pontos agrupados e ruído",
         color_discrete_map=cmap
     )
-
     fig_scatter.update_traces(marker=dict(size=10, line=dict(width=0)))
+
+    # 🔵 Opcional: desenhar círculos de raio ε em coordenadas do dado
+    if show_eps_radius:
+        shapes, used = epsilon_circles(df[["x1", "x2"]], eps, max_circles=max_circles)
+        # manter proporção 1:1 para os círculos não virarem elipses
+        fig_scatter.update_yaxes(scaleanchor="x", scaleratio=1.0)
+        # adicionar shapes (abaixo dos pontos)
+        fig_scatter.update_layout(shapes=shapes)
+        st.caption(f"Raio ε desenhado em {used} ponto(s) (limite configurado: {max_circles}).")
+
     fig_scatter = style_plot(fig_scatter, height=650)
     st.plotly_chart(fig_scatter, use_container_width=True)
 
@@ -242,12 +285,13 @@ with colB:
     fig_k.add_hline(y=eps, line_dash="dash",
                     annotation_text=f"ε = {eps:.4f}", annotation_position="top left")
 
-    # 🔧 Feature flag: só mostra a linha de ε sugerido se a flag estiver True
     if SHOW_SUGGESTED_EPS_VISUAL:
+        eps_suggested = suggest_eps_from_knee(sorted_kdist)
         fig_k.add_hline(y=eps_suggested, line_dash="dot",
                         annotation_text=f"ε sugerido ≈ {eps_suggested:.4f}")
 
     fig_k.update_layout(
+        legend_title_text="Legenda",
         xaxis_title="Índice do ponto (ordenado pela k-distância)",
         yaxis_title=f"Distância até o {min_samples}º vizinho",
         title="Gráfico do joelho (k-distância)"
@@ -288,6 +332,7 @@ with st.expander("Notas"):
         """
 - **Cores fixas**: apenas *Ruído* é vermelho; grupos usam paleta estável sem vermelho.
 - **Símbolos**: grupos → círculo; *Ruído* → “x”.
-- **Joelho**: o cálculo de **ε sugerido** continua ativo, mas sua exibição pode ser ligada/desligada pela *feature flag*.
+- **Raio ε**: círculos são desenhados em coordenadas reais (não em pixels) e com limite de quantidade para manter a performance; a proporção dos eixos é fixada (1:1) para os círculos não virarem elipses.
+- **Joelho**: o cálculo de **ε sugerido** permanece ativo; a exibição pode ser ligada/desligada pela *feature flag*.
         """
     )
