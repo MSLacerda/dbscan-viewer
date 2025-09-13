@@ -12,7 +12,7 @@ import re, colorsys
 
 # ============================ Feature Flags ============================
 SHOW_SUGGESTED_EPS_VISUAL = False   # mostra/oculta a linha de ε sugerido (só visual)
-EXPOSE_FLAGS_IN_UI = True           # exibir flags na UI
+EXPOSE_FLAGS_IN_UI = False           # exibir flags na UI
 # ======================================================================
 
 st.set_page_config(page_title="Explorador DBSCAN – ε", layout="wide")
